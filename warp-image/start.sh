@@ -166,19 +166,37 @@ else
     [ -n "${ARGO_DOMAIN_FINAL}" ] && echo "[Argo] 临时域名: ${ARGO_DOMAIN_FINAL}"
 fi
 
-# ── 5. 生成订阅 ───────────────────────────────────────────────────────────────
-mkdir -p /tmp/www
+# ── 5. 生成订阅内容 ──────────────────────────────────────────────────────────
 if [ -n "${ARGO_DOMAIN_FINAL}" ]; then
     VLESS_URI="vless://${UUID}@${CFIP}:${CFPORT}?encryption=none&security=tls&sni=${ARGO_DOMAIN_FINAL}&type=ws&host=${ARGO_DOMAIN_FINAL}&path=%2F${UUID}-vless#${NAME}-vless"
-
     VMESS_JSON="{\"v\":\"2\",\"ps\":\"${NAME}-vmess\",\"add\":\"${CFIP}\",\"port\":\"${CFPORT}\",\"id\":\"${UUID}\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"${ARGO_DOMAIN_FINAL}\",\"path\":\"/${UUID}-vmess\",\"tls\":\"tls\",\"sni\":\"${ARGO_DOMAIN_FINAL}\",\"alpn\":\"\"}"
     VMESS_URI="vmess://$(echo -n "${VMESS_JSON}" | base64 | tr -d '\n')"
-
-    printf '%s\n%s' "${VLESS_URI}" "${VMESS_URI}" | base64 | tr -d '\n' > /tmp/www/${SUB_PATH}
+    SUB_CONTENT=$(printf '%s\n%s' "${VLESS_URI}" "${VMESS_URI}" | base64 | tr -d '\n')
     echo "[Sub] 订阅: https://${ARGO_DOMAIN_FINAL}/${SUB_PATH}"
 else
-    echo "暂无订阅" | base64 | tr -d '\n' > /tmp/www/${SUB_PATH}
+    SUB_CONTENT=$(echo "no subscription yet" | base64 | tr -d '\n')
 fi
+
+# 用 Python 起订阅服务（监听 127.0.0.1:8004），nginx proxy_pass 到它
+python3 - << PYEOF &
+import http.server, socketserver, os
+
+content = b"${SUB_CONTENT}"
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
+
+with socketserver.TCPServer(("127.0.0.1", 8004), Handler) as httpd:
+    httpd.serve_forever()
+PYEOF
+sleep 1
+echo "[Sub] 订阅服务已启动 127.0.0.1:8004"
 
 # ── 6. 启动 Nginx（前台，作为主进程）─────────────────────────────────────────
 echo "[Nginx] 启动..."
