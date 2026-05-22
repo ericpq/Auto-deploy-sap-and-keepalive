@@ -32,6 +32,7 @@ http {
     client_max_body_size 0;
     server {
         listen ${PORT};
+        listen 8001;
         root /tmp/www;
         location = / {
             default_type text/plain;
@@ -143,37 +144,10 @@ sleep 2
 if [ -n "${ARGO_AUTH}" ] && [ -n "${ARGO_DOMAIN}" ]; then
     echo "[argo] 固定隧道 ${ARGO_DOMAIN} -> 本地 :${PORT}"
 
-    # 从 JWT token 解析凭据（不用 --token，用 credentials-file 模式让本地 ingress 生效）
-    python3 << PYEOF
-import sys, base64, json
-token = """${ARGO_AUTH}"""
-try:
-    payload = token.split('.')[1]
-    payload += '=' * (4 - len(payload) % 4)
-    d = json.loads(base64.urlsafe_b64decode(payload).decode())
-    creds = {"AccountTag": d.get('a',''), "TunnelID": d.get('t',''), "TunnelSecret": d.get('s','')}
-    open('/tmp/cf-creds.json','w').write(json.dumps(creds))
-    open('/tmp/cf-tunnel-id.txt','w').write(d.get('t',''))
-    print(f"[argo] account={d.get('a','')} tunnel={d.get('t','')}")
-except Exception as e:
-    print(f"[argo] JWT decode error: {e}")
-PYEOF
-
-    TUNNEL_ID=$(cat /tmp/cf-tunnel-id.txt 2>/dev/null)
-    cat > /tmp/cf-config.yml << CFEOF
-tunnel: ${TUNNEL_ID}
-credentials-file: /tmp/cf-creds.json
-ingress:
-  - hostname: ${ARGO_DOMAIN}
-    service: http://127.0.0.1:${PORT}
-  - service: http_status:404
-CFEOF
-
-    # credentials-file 模式：本地 ingress 完全覆盖云端配置
-    cloudflared tunnel --config /tmp/cf-config.yml \
-        --edge-ip-version auto --no-autoupdate \
+    # token 模式（Cloudflare 控制台配置端口 8001，nginx 同时监听 8001）
+    cloudflared tunnel --edge-ip-version auto --no-autoupdate \
         --logfile /tmp/argo.log \
-        run &
+        run --token "${ARGO_AUTH}" &
     ARGO_DOMAIN_FINAL="${ARGO_DOMAIN}"
 else
     echo "[argo] 临时隧道 -> :${PORT}"
