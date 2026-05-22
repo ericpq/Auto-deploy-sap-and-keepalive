@@ -2,7 +2,7 @@ FROM alpine:3.20
 
 RUN apk add --no-cache \
     bash curl wget unzip ca-certificates \
-    nginx python3 gettext openssl
+    nginx python3 gettext openssl socat
 
 WORKDIR /app
 
