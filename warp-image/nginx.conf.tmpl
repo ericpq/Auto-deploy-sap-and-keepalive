@@ -19,10 +19,10 @@ http {
             return 200 "Hello World\n";
         }
 
-        # 订阅接口
+        # 订阅接口 -> 内部 Python sub server
         location = /${SUB_PATH} {
-            default_type text/plain; charset utf-8;
-            try_files /${SUB_PATH} =404;
+            proxy_pass http://127.0.0.1:8004;
+            proxy_read_timeout 10s;
         }
 
         # vless ws -> xray:XRAY_PORT
