@@ -1,0 +1,221 @@
+name: 构建 WARP 镜像并部署到 SAP
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: '操作类型'
+        required: true
+        default: 'build-and-deploy'
+        type: choice
+        options:
+          - build-only       # 只构建推送镜像
+          - deploy-only      # 只部署（用已有镜像）
+          - build-and-deploy # 构建后立即部署
+      region:
+        description: '部署区域（deploy-only / build-and-deploy 时有效）'
+        required: false
+        default: 'US(free)'
+        type: choice
+        options:
+          - SG(free)
+          - US(free)
+          - SAP-UAE(Dubai)
+          - SAP-AU(Sydney)
+          - SAP-US(Sterling)
+          - SAP-US-West(Colorado)
+          - SAP-JP(Tokyo)
+          - AWS-AU(Sydney)
+          - AWS-BR(São Paulo)
+          - AWS-KR(Seoul)
+          - AWS-CA(Montreal)
+          - AWS-US(VA)
+          - AWS-US(OR)
+          - AWS-EU(Frankfurt)
+          - AWS-JP(Tokyo)
+          - AWS-SG(Singapore)
+          - GCP-AU(Sydney)
+          - GCP-BR(São Paulo)
+          - GCP-US(IA)
+          - GCP-EU(Frankfurt)
+          - GCP-JP(Osaka)
+          - GCP-JP(Tokyo)
+          - Azure-AU(Sydney)
+          - Azure-BR(São Paulo)
+          - Azure-CA(Montreal)
+          - Azure-US(VA)
+          - Azure-US(WA)
+          - Azure-EU(Netherlands)
+          - Azure-JP(Tokyo)
+          - Azure-SG(Singapore)
+      app_name:
+        description: '应用名称（留空自动生成）'
+        required: false
+        default: ''
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/sap-warp-node
+  MEMORY: 256M
+  DISK: 300M
+
+jobs:
+  # ── Job 1: 构建并推送镜像 ────────────────────────────────────────────────
+  build:
+    name: Build & Push Image
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.action != 'deploy-only' }}
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ./warp-image
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+  # ── Job 2: 部署到 SAP ────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to SAP
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: |
+      always() &&
+      github.event.inputs.action != 'build-only' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
+
+    steps:
+      - name: Install CF CLI
+        run: |
+          wget -q -O - https://packages.cloudfoundry.org/debian/cli.cloudfoundry.org.key | sudo apt-key add -
+          echo "deb https://packages.cloudfoundry.org/debian stable main" | sudo tee /etc/apt/sources.list.d/cloudfoundry-cli.list
+          sudo apt-get update -q
+          sudo apt-get install -y cf8-cli
+
+      - name: Determine CF API and app name
+        run: |
+          RANDOM_STR=$(head /dev/urandom | tr -dc 'a-z' | head -c 6)
+          case "${{ github.event.inputs.region }}" in
+            "SG(free)")      CF_API="https://api.cf.ap21.hana.ondemand.com";  PREFIX="warp-sg" ;;
+            "US(free)")      CF_API="https://api.cf.us10-001.hana.ondemand.com"; PREFIX="warp-us" ;;
+            "SAP-UAE(Dubai)")  CF_API="https://api.cf.ae01.hana.ondemand.com";  PREFIX="warp-ae" ;;
+            "SAP-AU(Sydney)")  CF_API="https://api.cf.ap01.hana.ondemand.com";  PREFIX="warp-ap" ;;
+            "SAP-US(Sterling)") CF_API="https://api.cf.us01.hana.ondemand.com"; PREFIX="warp-us1" ;;
+            "SAP-US-West(Colorado)") CF_API="https://api.cf.us02.hana.ondemand.com"; PREFIX="warp-us2" ;;
+            "SAP-JP(Tokyo)")   CF_API="https://api.cf.jp01.hana.ondemand.com";  PREFIX="warp-jp" ;;
+            "AWS-AU(Sydney)")  CF_API="https://api.cf.ap10.hana.ondemand.com";  PREFIX="warp-awau" ;;
+            "AWS-BR(São Paulo)") CF_API="https://api.cf.br10.hana.ondemand.com"; PREFIX="warp-awbr" ;;
+            "AWS-KR(Seoul)")   CF_API="https://api.cf.ap12.hana.ondemand.com";  PREFIX="warp-awkr" ;;
+            "AWS-CA(Montreal)") CF_API="https://api.cf.ca10.hana.ondemand.com"; PREFIX="warp-awca" ;;
+            "AWS-US(VA)")      CF_API="https://api.cf.us10-001.hana.ondemand.com"; PREFIX="warp-awusva" ;;
+            "AWS-US(OR)")      CF_API="https://api.cf.us11.hana.ondemand.com";  PREFIX="warp-awusor" ;;
+            "AWS-EU(Frankfurt)") CF_API="https://api.cf.eu10-005.hana.ondemand.com"; PREFIX="warp-aweu" ;;
+            "AWS-JP(Tokyo)")   CF_API="https://api.cf.jp10.hana.ondemand.com";  PREFIX="warp-awjp" ;;
+            "AWS-SG(Singapore)") CF_API="https://api.cf.ap11.hana.ondemand.com"; PREFIX="warp-awsg" ;;
+            "GCP-AU(Sydney)")  CF_API="https://api.cf.ap30.hana.ondemand.com";  PREFIX="warp-gcau" ;;
+            "GCP-BR(São Paulo)") CF_API="https://api.cf.br30.hana.ondemand.com"; PREFIX="warp-gcbr" ;;
+            "GCP-US(IA)")      CF_API="https://api.cf.us30.hana.ondemand.com";  PREFIX="warp-gcus" ;;
+            "GCP-EU(Frankfurt)") CF_API="https://api.cf.eu30.hana.ondemand.com"; PREFIX="warp-gceu" ;;
+            "GCP-JP(Osaka)")   CF_API="https://api.cf.jp30.hana.ondemand.com";  PREFIX="warp-gcjpo" ;;
+            "GCP-JP(Tokyo)")   CF_API="https://api.cf.jp31.hana.ondemand.com";  PREFIX="warp-gcjpt" ;;
+            "Azure-AU(Sydney)") CF_API="https://api.cf.ap20.hana.ondemand.com"; PREFIX="warp-azau" ;;
+            "Azure-BR(São Paulo)") CF_API="https://api.cf.br20.hana.ondemand.com"; PREFIX="warp-azbr" ;;
+            "Azure-CA(Montreal)") CF_API="https://api.cf.ca20.hana.ondemand.com"; PREFIX="warp-azca" ;;
+            "Azure-US(VA)")    CF_API="https://api.cf.us21.hana.ondemand.com";  PREFIX="warp-azva" ;;
+            "Azure-US(WA)")    CF_API="https://api.cf.us20.hana.ondemand.com";  PREFIX="warp-azwa" ;;
+            "Azure-EU(Netherlands)") CF_API="https://api.cf.eu20-001.hana.ondemand.com"; PREFIX="warp-azeu" ;;
+            "Azure-JP(Tokyo)") CF_API="https://api.cf.jp20.hana.ondemand.com";  PREFIX="warp-azjp" ;;
+            "Azure-SG(Singapore)") CF_API="https://api.cf.ap21.hana.ondemand.com"; PREFIX="warp-azsg" ;;
+            *)                 CF_API="https://api.cf.us10-001.hana.ondemand.com"; PREFIX="warp" ;;
+          esac
+
+          echo "CF_API=${CF_API}" >> $GITHUB_ENV
+
+          if [ -n "${{ github.event.inputs.app_name }}" ]; then
+            echo "APP_NAME=${{ github.event.inputs.app_name }}" >> $GITHUB_ENV
+          else
+            echo "APP_NAME=${PREFIX}${RANDOM_STR}" >> $GITHUB_ENV
+          fi
+
+          # 镜像地址（build-and-deploy 用刚推的，deploy-only 用 latest）
+          echo "DOCKER_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_ENV
+
+      - name: Login to Cloud Foundry
+        run: |
+          cf login -a ${{ env.CF_API }} -u "${{ secrets.EMAIL }}" -p "${{ secrets.PASSWORD }}"
+          ORG=$(cf orgs | sed -n '4p')
+          SPACE=$(cf spaces | sed -n '4p')
+          cf login -a ${{ env.CF_API }} -u "${{ secrets.EMAIL }}" -p "${{ secrets.PASSWORD }}" -o "$ORG" -s "$SPACE"
+          echo "ORG=$ORG"   >> $GITHUB_ENV
+          echo "SPACE=$SPACE" >> $GITHUB_ENV
+
+      - name: Deploy application
+        run: |
+          if ! cf push ${{ env.APP_NAME }} \
+              --docker-image ${{ env.DOCKER_IMAGE }} \
+              -m ${{ env.MEMORY }} -k ${{ env.DISK }} \
+              --health-check-type port; then
+            cf delete ${{ env.APP_NAME }} -r -f
+            echo "部署失败，已清理残留。SAP 试用版资源有限，请稍后再试。"
+            exit 1
+          fi
+
+      - name: Set environment variables
+        run: |
+          cf set-env ${{ env.APP_NAME }} UUID          "${{ secrets.UUID }}"
+          cf set-env ${{ env.APP_NAME }} ARGO_PORT     "${{ secrets.ARGO_PORT }}"
+          cf set-env ${{ env.APP_NAME }} ARGO_DOMAIN   "${{ secrets.ARGO_DOMAIN }}"
+          cf set-env ${{ env.APP_NAME }} ARGO_AUTH     "${{ secrets.ARGO_AUTH }}"
+          cf set-env ${{ env.APP_NAME }} SUB_PATH      "${{ secrets.SUB_PATH }}"
+          cf set-env ${{ env.APP_NAME }} CFIP          "${{ secrets.CFIP || 'cf.877774.xyz' }}"
+          cf set-env ${{ env.APP_NAME }} CFPORT        "${{ secrets.CFPORT || '443' }}"
+          cf set-env ${{ env.APP_NAME }} NAME          "${{ env.APP_NAME }}"
+          cf set-env ${{ env.APP_NAME }} NEZHA_SERVER  "${{ secrets.NEZHA_SERVER }}"
+          cf set-env ${{ env.APP_NAME }} NEZHA_PORT    "${{ secrets.NEZHA_PORT }}"
+          cf set-env ${{ env.APP_NAME }} NEZHA_KEY     "${{ secrets.NEZHA_KEY }}"
+
+      - name: Restage application
+        run: cf restage ${{ env.APP_NAME }}
+
+      - name: 部署信息
+        run: |
+          echo "=============================="
+          ROUTE=$(cf app ${{ env.APP_NAME }} | grep "routes:" | awk '{print $2}')
+          echo "✅ 部署完成"
+          echo "区域     : ${{ github.event.inputs.region }}"
+          echo "应用名称 : ${{ env.APP_NAME }}"
+          echo "应用 URL : https://${ROUTE}"
+          echo "订阅地址 : https://${ROUTE}/${{ secrets.SUB_PATH || 'sub' }}"
+          echo "镜像     : ${{ env.DOCKER_IMAGE }}"
+          echo "=============================="
