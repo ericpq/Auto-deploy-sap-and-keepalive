@@ -1,0 +1,47 @@
+worker_processes 1;
+daemon off;
+error_log /dev/null;
+pid /tmp/nginx.pid;
+
+events { worker_connections 512; }
+
+http {
+    access_log off;
+    client_max_body_size 0;
+
+    server {
+        listen 8001;
+
+        # 健康检查 / Hello World
+        location = / {
+            default_type text/plain;
+            return 200 "Hello World\n";
+        }
+
+        # 订阅接口
+        location = /${SUB_PATH} {
+            default_type text/plain;
+            alias /tmp/sub.b64;
+        }
+
+        # vless ws
+        location = /${UUID}-vless {
+            proxy_pass http://127.0.0.1:8002;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_read_timeout 300s;
+        }
+
+        # vmess ws
+        location = /${UUID}-vmess {
+            proxy_pass http://127.0.0.1:8002;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_read_timeout 300s;
+        }
+    }
+}
