@@ -32,7 +32,6 @@ http {
     client_max_body_size 0;
     server {
         listen ${PORT};
-        listen 8001;
         root /tmp/www;
         location = / {
             default_type text/plain;
@@ -142,9 +141,34 @@ sleep 2
 
 # ── Argo ──────────────────────────────────────────────────────────────────────
 if [ -n "${ARGO_AUTH}" ] && [ -n "${ARGO_DOMAIN}" ]; then
-    echo "[argo] 固定隧道 ${ARGO_DOMAIN}"
-    cloudflared tunnel --edge-ip-version auto --no-autoupdate \
-        run --token "${ARGO_AUTH}" --logfile /tmp/argo.log &
+    echo "[argo] 固定隧道 ${ARGO_DOMAIN} -> 本地 :${PORT}"
+
+    # 从 JWT token 解析 tunnel ID
+    TUNNEL_ID=$(echo "${ARGO_AUTH}" | cut -d. -f2 | python3 -c "
+import sys, base64, json
+p = sys.stdin.read().strip()
+p += '=' * (4 - len(p) % 4)
+try:
+    d = json.loads(base64.urlsafe_b64decode(p).decode())
+    print(d.get('t', ''))
+except:
+    print('')
+" 2>/dev/null)
+    echo "[argo] tunnel_id=${TUNNEL_ID}"
+
+    # 生成本地 ingress 配置，覆盖 Cloudflare 控制台中配置的端口，让 cloudflared 连本地 $PORT
+    cat > /tmp/cf-config.yml << CFEOF
+tunnel: ${TUNNEL_ID}
+ingress:
+  - hostname: ${ARGO_DOMAIN}
+    service: http://127.0.0.1:${PORT}
+  - service: http_status:404
+CFEOF
+
+    cloudflared tunnel --config /tmp/cf-config.yml \
+        --edge-ip-version auto --no-autoupdate \
+        --logfile /tmp/argo.log \
+        run --token "${ARGO_AUTH}" &
     ARGO_DOMAIN_FINAL="${ARGO_DOMAIN}"
 else
     echo "[argo] 临时隧道 -> :${PORT}"
