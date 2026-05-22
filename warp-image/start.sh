@@ -1,6 +1,5 @@
 #!/bin/bash
 
-# 不用 set -e，手动处理关键错误
 UUID=${UUID:-$(python3 -c "import uuid; print(uuid.uuid4())")}
 PORT=${PORT:-8080}
 XRAY_PORT=8002
@@ -11,12 +10,19 @@ VMESS_PORT=8003
 [ -z "$NAME" ]      && NAME=SAP-WARP
 WARP_SOCKS=127.0.0.1:40000
 
-echo "[boot] PORT=${PORT} SUB=${SUB_PATH} UUID=${UUID:0:8}..."
+# 订阅文件目录
+mkdir -p /tmp/www
+SUB_FILE="/tmp/www/${SUB_PATH}"
 
-# ── nginx 配置生成 ─────────────────────────────────────────────────────────────
-write_nginx() {
-    local sub_b64="${1:-}"
-    cat > /tmp/nginx.conf << NGINXEOF
+# 先写占位内容，让 nginx 能立即响应
+echo "not_ready" > "$SUB_FILE"
+
+echo "[boot] PORT=${PORT} SUB=${SUB_PATH}"
+echo "[boot] ARGO_DOMAIN=${ARGO_DOMAIN}"
+echo "[boot] UUID=${UUID:0:8}..."
+
+# ── nginx（daemon 模式，静态配置不变）─────────────────────────────────────────
+cat > /tmp/nginx.conf << NGINXEOF
 worker_processes 1;
 error_log /dev/null;
 pid /tmp/nginx.pid;
@@ -26,13 +32,14 @@ http {
     client_max_body_size 0;
     server {
         listen ${PORT};
+        root /tmp/www;
         location = / {
             default_type text/plain;
             return 200 "Hello World\n";
         }
         location = /${SUB_PATH} {
             default_type "text/plain";
-            return 200 "${sub_b64:-not_ready}";
+            try_files \$uri =404;
         }
         location = /${UUID}-vless {
             proxy_pass http://127.0.0.1:${XRAY_PORT};
@@ -53,23 +60,17 @@ http {
     }
 }
 NGINXEOF
-}
 
-# ── 1. nginx 启动（daemon 模式，只监听 $PORT）─────────────────────────────────
-write_nginx
 nginx -c /tmp/nginx.conf
-if [ $? -ne 0 ]; then
-    echo "[nginx] 启动失败！退出"
-    exit 1
-fi
+if [ $? -ne 0 ]; then echo "[nginx] 启动失败！"; exit 1; fi
 sleep 1
 echo "[nginx] 已启动 PID=$(cat /tmp/nginx.pid 2>/dev/null)"
 
-# ── 2. socat 桥接 8001 → $PORT（Argo 固定隧道用）────────────────────────────
+# socat: 桥接 8001 → PORT（Argo 固定隧道可能配置了 8001）
 socat TCP-LISTEN:8001,fork,reuseaddr TCP:127.0.0.1:${PORT} &
 echo "[socat] 8001 → ${PORT}"
 
-# ── 3. WARP ───────────────────────────────────────────────────────────────────
+# ── WARP ─────────────────────────────────────────────────────────────────────
 echo "[warp] 注册..."
 cd /tmp
 wgcf register --accept-tos -f >/dev/null 2>&1 || true
@@ -113,7 +114,7 @@ else
     echo "[warp] wgcf 失败，使用直连"
 fi
 
-# ── 4. xray ───────────────────────────────────────────────────────────────────
+# ── xray ──────────────────────────────────────────────────────────────────────
 mkdir -p /tmp/xray-conf
 if [ "$WARP_ENABLED" = "true" ]; then
     EXTRA=', {"tag":"warp","protocol":"socks","settings":{"servers":[{"address":"127.0.0.1","port":40000}]}}'
@@ -140,7 +141,7 @@ XC
 xray run -c /tmp/xray-conf/config.json &
 sleep 2
 
-# ── 5. Argo ───────────────────────────────────────────────────────────────────
+# ── Argo ──────────────────────────────────────────────────────────────────────
 if [ -n "${ARGO_AUTH}" ] && [ -n "${ARGO_DOMAIN}" ]; then
     echo "[argo] 固定隧道 ${ARGO_DOMAIN}"
     cloudflared tunnel --edge-ip-version auto --no-autoupdate \
@@ -157,26 +158,27 @@ else
         echo "[argo] 等待 ${i}/20"; sleep 3
     done
 fi
-echo "[argo] 域名=${ARGO_DOMAIN_FINAL}"
+echo "[argo] ARGO_DOMAIN_FINAL=${ARGO_DOMAIN_FINAL}"
 
-# ── 6. 订阅 + nginx 热重载 ────────────────────────────────────────────────────
+# ── 生成订阅文件（nginx 直接 serve，无需重载）────────────────────────────────
 if [ -n "${ARGO_DOMAIN_FINAL}" ]; then
     V="vless://${UUID}@${CFIP}:${CFPORT}?encryption=none&security=tls&sni=${ARGO_DOMAIN_FINAL}&type=ws&host=${ARGO_DOMAIN_FINAL}&path=%2F${UUID}-vless#${NAME}-vless"
     MJ="{\"v\":\"2\",\"ps\":\"${NAME}-vmess\",\"add\":\"${CFIP}\",\"port\":\"${CFPORT}\",\"id\":\"${UUID}\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"${ARGO_DOMAIN_FINAL}\",\"path\":\"/${UUID}-vmess\",\"tls\":\"tls\",\"sni\":\"${ARGO_DOMAIN_FINAL}\",\"alpn\":\"\"}"
     M="vmess://$(echo -n "$MJ" | base64 | tr -d '\n')"
-    SUB_B64="$(printf '%s\n%s' "$V" "$M" | base64 | tr -d '\n')"
+    printf '%s\n%s' "$V" "$M" | base64 | tr -d '\n' > "$SUB_FILE"
+    echo "[sub] 订阅已写入 ${SUB_FILE}"
+    echo "[sub] 订阅: https://${ARGO_DOMAIN_FINAL}/${SUB_PATH}"
 else
-    SUB_B64="$(echo 'no_argo_domain' | base64 | tr -d '\n')"
+    # 写调试信息方便排查
+    printf 'DEBUG: ARGO_DOMAIN=[%s] ARGO_AUTH_LEN=[%d]' \
+        "${ARGO_DOMAIN}" "${#ARGO_AUTH}" > "$SUB_FILE"
+    echo "[sub] ⚠️ 无 Argo 域名，已写入调试信息"
 fi
-
-write_nginx "$SUB_B64"
-nginx -s reload && echo "[nginx] 热重载成功" || echo "[nginx] 热重载失败（继续运行）"
 
 echo ""
 echo "================================"
 echo " WARP=${WARP_ENABLED}  IP=${WARP_IP}"
 echo " Argo=${ARGO_DOMAIN_FINAL}"
-echo " 订阅=https://${ARGO_DOMAIN_FINAL}/${SUB_PATH}"
 echo "================================"
 
 sleep infinity
