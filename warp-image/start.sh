@@ -167,16 +167,17 @@ else
 fi
 
 # ── 5. 生成订阅 ───────────────────────────────────────────────────────────────
+mkdir -p /tmp/www
 if [ -n "${ARGO_DOMAIN_FINAL}" ]; then
     VLESS_URI="vless://${UUID}@${CFIP}:${CFPORT}?encryption=none&security=tls&sni=${ARGO_DOMAIN_FINAL}&type=ws&host=${ARGO_DOMAIN_FINAL}&path=%2F${UUID}-vless#${NAME}-vless"
 
     VMESS_JSON="{\"v\":\"2\",\"ps\":\"${NAME}-vmess\",\"add\":\"${CFIP}\",\"port\":\"${CFPORT}\",\"id\":\"${UUID}\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"${ARGO_DOMAIN_FINAL}\",\"path\":\"/${UUID}-vmess\",\"tls\":\"tls\",\"sni\":\"${ARGO_DOMAIN_FINAL}\",\"alpn\":\"\"}"
     VMESS_URI="vmess://$(echo -n "${VMESS_JSON}" | base64 | tr -d '\n')"
 
-    printf '%s\n%s' "${VLESS_URI}" "${VMESS_URI}" | base64 | tr -d '\n' > /tmp/sub.b64
+    printf '%s\n%s' "${VLESS_URI}" "${VMESS_URI}" | base64 | tr -d '\n' > /tmp/www/${SUB_PATH}
     echo "[Sub] 订阅: https://${ARGO_DOMAIN_FINAL}/${SUB_PATH}"
 else
-    echo "暂无订阅" | base64 > /tmp/sub.b64
+    echo "暂无订阅" | base64 | tr -d '\n' > /tmp/www/${SUB_PATH}
 fi
 
 # ── 6. 启动 Nginx（前台，作为主进程）─────────────────────────────────────────
