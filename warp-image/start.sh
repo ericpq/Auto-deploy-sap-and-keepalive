@@ -32,6 +32,7 @@ http {
     client_max_body_size 0;
     server {
         listen ${PORT};
+        listen 8001;
         root /tmp/www;
         location = / {
             default_type text/plain;
@@ -66,9 +67,7 @@ if [ $? -ne 0 ]; then echo "[nginx] 启动失败！"; exit 1; fi
 sleep 1
 echo "[nginx] 已启动 PID=$(cat /tmp/nginx.pid 2>/dev/null)"
 
-# socat: 桥接 8001 → PORT（Argo 固定隧道可能配置了 8001）
-socat TCP-LISTEN:8001,fork,reuseaddr TCP:127.0.0.1:${PORT} &
-echo "[socat] 8001 → ${PORT}"
+# nginx 已同时监听 8001，无需 socat
 
 # ── WARP ─────────────────────────────────────────────────────────────────────
 echo "[warp] 注册..."
