@@ -11,6 +11,7 @@ http {
 
     server {
         listen ${PORT};
+        root /tmp/www;
 
         # 健康检查 / Hello World
         location = / {
@@ -20,8 +21,8 @@ http {
 
         # 订阅接口
         location = /${SUB_PATH} {
-            default_type text/plain;
-            alias /tmp/sub.b64;
+            default_type text/plain; charset utf-8;
+            try_files /${SUB_PATH} =404;
         }
 
         # vless ws -> xray:XRAY_PORT
