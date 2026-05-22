@@ -169,6 +169,7 @@ http {
     client_max_body_size 0;
     server {
         listen ${PORT};
+        listen 8001;
 
         location = / {
             default_type text/plain;
